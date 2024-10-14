@@ -1,0 +1,78 @@
+# Kernel ELM 类定义保持不变（已包含 save_model 和 load_model 方法）
+class KernelELM:
+    def __init__(self, kernel='rbf', gamma=0.1, reg_lambda=1e-3, threshold=0.5):
+        self.kernel = kernel
+        self.gamma = gamma
+        self.reg_lambda = reg_lambda
+        self.threshold = threshold
+        self.alpha = None
+        self.X_train = None
+
+    def _kernel_function(self, X1, X2):
+        if self.kernel == 'linear':
+            return np.dot(X1, X2.T)
+        elif self.kernel == 'rbf':
+            sq_dists = np.sum(X1**2, axis=1).reshape(-1, 1) + np.sum(X2**2, axis=1) - 2 * np.dot(X1, X2.T)
+            return np.exp(-self.gamma * sq_dists)
+        else:
+            raise ValueError(f"Unsupported kernel type: {self.kernel}")
+
+    def train(self, X, y, sample_weight=None):
+        self.X_train = X
+        K = self._kernel_function(X, X)
+        if sample_weight is None:
+            self.alpha = np.linalg.solve(K + self.reg_lambda * np.eye(len(X)), y)
+        else:
+            W = np.diag(sample_weight)
+            self.alpha = np.linalg.solve(W @ K + self.reg_lambda * np.eye(len(X)), W @ y)
+
+    def predict(self, X):
+        K_test = self._kernel_function(X, self.X_train)
+        predictions = np.dot(K_test, self.alpha)
+        return np.where(predictions >= self.threshold, 1, 0)
+
+    # 增加保存模型的方法
+    def save_model(self, filepath):
+        np.savez(filepath, alpha=self.alpha, X_train=self.X_train, gamma=self.gamma,
+                 reg_lambda=self.reg_lambda, threshold=self.threshold)
+        print(f"Model saved to {filepath}")
+
+    # 增加加载模型的方法
+    def load_model(self, filepath):
+        data = np.load(filepath, allow_pickle=True)
+        self.alpha = data['alpha']
+        self.X_train = data['X_train']
+        self.gamma = data['gamma'].item()
+        self.reg_lambda = data['reg_lambda'].item()
+        self.threshold = data['threshold'].item()
+        print(f"Model loaded from {filepath}")
+
+# 使用之前贝叶斯寻优保存的最佳模型来替换当前 ELM 模型
+#model_save_path = 'C:\\Users\\camby\\Desktop\\best_kernel_elm.npz'
+
+# 加载已保存的最佳 ELM 模型
+#kernel_elm_best = KernelELM()
+#kernel_elm_best.load_model(model_save_path)
+
+# 此时 kernel_elm_best 已替代你当前的 ELM 模型，你可以继续使用它进行预测或训练
+
+# 示例：使用该模型对测试集数据进行预测
+y_pred_test = kernel_elm_best.predict(X_test_original)
+
+# 输出预测结果
+print("Predictions on the test set using the best ELM model:")
+print(y_pred_test)
+
+# 评估模型在测试集上的性能
+from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_score
+
+accuracy_test = accuracy_score(y_test, y_pred_test)
+precision_test = precision_score(y_test, y_pred_test)
+recall_test = recall_score(y_test, y_pred_test)
+f1_test = f1_score(y_test, y_pred_test)
+
+# 输出测试集上的性能
+print(f'Test Set Accuracy: {accuracy_test:.4f}')
+print(f'Test Set Precision: {precision_test:.4f}')
+print(f'Test Set Recall: {recall_test:.4f}')
+print(f'Test Set F1 Score: {f1_test:.4f}')
