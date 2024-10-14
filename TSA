@@ -1,0 +1,70 @@
+# 使用正分类器和反分类器对测试集进行预测
+positive_test_probs = positive_cnn.predict(X_test_reshaped)
+positive_test_preds = (positive_test_probs >= 0.5).astype(int).flatten()
+
+negative_test_probs = negative_cnn.predict(X_test_reshaped)
+negative_test_preds = (negative_test_probs >= 0.5).astype(int).flatten()
+
+# 初始化最终的预测结果列表
+final_test_predictions = []
+
+# 存储二阶段评估的实际标签和预测结果
+second_stage_labels = []
+second_stage_predictions = []
+second_stage_samples = []  # 记录二阶段进入的样本
+
+# 统计进入第二阶段评估的样本数量
+second_stage_count = 0
+
+# 初始化存储被误分类的样本列表
+misclassified_samples = []
+
+# 二阶段评估逻辑
+for i in range(len(positive_test_preds)):
+    if positive_test_preds[i] == negative_test_preds[i]:
+        # 如果正反分类器对结果一致，直接采用该结果
+        final_test_predictions.append(positive_test_preds[i])
+    else:
+        # 如果正反分类器对结果不一致，使用ELM进行评估
+        elm_input = X_test_original[i].reshape(1, -1) if X_test_original[i].ndim == 1 else X_test_original[i]
+        elm_prediction = kernel_elm_best.predict(elm_input)
+        final_test_predictions.append(elm_prediction[0])  # 假设 elm_prediction 是数组
+        second_stage_labels.append(y_test[i])
+        second_stage_predictions.append(elm_prediction[0])  # 假设 elm_prediction 是数组
+        second_stage_count += 1  # 计数进入第二阶段评估的样本
+        
+        
+            
+
+# 打印进入第二阶段评估的样本数量和占比
+total_samples = len(positive_test_preds)
+second_stage_percentage = (second_stage_count / total_samples) * 100
+print(f'Number of samples entering the second stage: {second_stage_count}')
+print(f'Percentage of samples entering the second stage: {second_stage_percentage:.2f}%')
+
+# 将最终的预测结果转为NumPy数组
+final_test_predictions = np.array(final_test_predictions)
+
+# 评估集成模型在测试集上的性能
+accuracy = accuracy_score(y_test, final_test_predictions)
+precision = precision_score(y_test, final_test_predictions)
+recall = recall_score(y_test, final_test_predictions)
+f1 = f1_score(y_test, final_test_predictions)
+conf_matrix = confusion_matrix(y_test, final_test_predictions)
+class_report = classification_report(y_test, final_test_predictions)
+
+# 打印评估结果
+print(f'Test Accuracy: {accuracy:.4f}')
+print(f'Test Precision: {precision:.4f}')
+print(f'Test Recall: {recall:.4f}')
+print(f'Test F1 Score: {f1:.4f}')
+print(f'Confusion Matrix:\n{conf_matrix}')
+print(f'Classification Report:\n{class_report}')
+
+# 计算并打印二阶段评估中的判断正确的概率
+if second_stage_count > 0:
+    second_stage_accuracy = accuracy_score(second_stage_labels, second_stage_predictions)
+    print(f'Probability of Correct Judgments in the Second Stage: {second_stage_accuracy:.4f}')
+else:
+    print('No samples entered the second stage for evaluation.')
+
