@@ -1,0 +1,232 @@
+import tensorflow as tf
+from tensorflow.keras import layers, models, optimizers, regularizers
+from tensorflow.keras.layers import (Conv1D, BatchNormalization, MaxPooling1D,
+                                     GlobalAveragePooling1D, Dense, Activation,
+                                     Add, concatenate, Input)
+from tensorflow.keras.models import Model
+from tensorflow.keras.layers import Embedding, Flatten, multiply, Dense, LeakyReLU,Dropout
+from tensorflow.keras.optimizers import Adam
+from sklearn.preprocessing import MinMaxScaler
+import matplotlib.pyplot as plt
+import numpy as np
+import pandas as pd
+from sklearn.model_selection import train_test_split
+from sklearn.preprocessing import StandardScaler
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import (classification_report, confusion_matrix,
+                             accuracy_score, precision_score, recall_score, f1_score)
+
+from skopt import gp_minimize
+from skopt.space import Real
+from skopt.utils import use_named_args
+# 加载原始数据
+X_data_path = 'C:\\Users\\camby\\Desktop\\IEE39x1.xlsx'
+Y_data_path = 'C:\\Users\\camby\\Desktop\\IEE39y.xlsx'
+
+X = pd.read_excel(X_data_path).values
+y = pd.read_excel(Y_data_path).values.ravel()  # 假设标签是单列数据
+
+# 使用特征0（母线编号）进行分层抽样
+bus_labels = X[:, 0]  # 假设第0列是母线编号
+
+# 数据集划分为训练集、验证集和测试集，基于特征0（母线编号）进行分层
+X_train, X_temp, y_train, y_temp = train_test_split(
+    X, y, test_size=0.3, random_state=42, stratify=bus_labels)
+
+X_val, X_test, y_val, y_test = train_test_split(
+    X_temp, y_temp, test_size=0.5, random_state=42, stratify=X_temp[:, 0])
+
+# 此时训练集、验证集和测试集都已经根据母线编号进行分层
+# 保存原始数据副本
+X_train_original = X_train.copy()
+X_val_original = X_val.copy()
+X_test_original = X_test.copy()
+import pandas as pd
+
+# 假设 X_train_original 已经保存了原始训练集数据
+X_train_original_df = pd.DataFrame(X_train_original)
+
+# 输出前几行数据以排查
+print(X_train_original_df.head())
+#%%
+
+# 数据标准化
+scaler = StandardScaler()
+X_train = scaler.fit_transform(X_train)
+X_val = scaler.transform(X_val)
+X_test = scaler.transform(X_test)
+
+# 调整输入数据形状以适应CNN
+X_train_reshaped = X_train.reshape(X_train.shape[0], X_train.shape[1], 1)
+X_val_reshaped = X_val.reshape(X_val.shape[0], X_val.shape[1], 1)
+X_test_reshaped = X_test.reshape(X_test.shape[0], X_test.shape[1], 1)
+
+# 不再进行One-hot编码，直接使用原始的0和1标签
+# y_train, y_val, y_test 已经是0和1的数组
+
+# 构建先进的CNN模型
+def residual_block(x, filters, kernel_size, strides=1):
+    shortcut = x
+    x = Conv1D(filters, kernel_size=kernel_size, strides=strides, padding='same')(x)
+    x = BatchNormalization()(x)
+    x = Activation('relu')(x)
+
+    x = Conv1D(filters, kernel_size=kernel_size, strides=1, padding='same')(x)
+    x = BatchNormalization()(x)
+
+    if strides != 1 or shortcut.shape[-1] != filters:
+        shortcut = Conv1D(filters, kernel_size=1, strides=strides, padding='same')(shortcut)
+        shortcut = BatchNormalization()(shortcut)
+
+    x = Add()([x, shortcut])
+    x = Activation('relu')(x)
+    return x
+
+def inception_module(x, filters):
+    branch1x1 = Conv1D(filters, kernel_size=1, padding='same', activation='relu')(x)
+
+    branch3x3 = Conv1D(filters, kernel_size=1, padding='same', activation='relu')(x)
+    branch3x3 = Conv1D(filters, kernel_size=3, padding='same', activation='relu')(branch3x3)
+
+    branch5x5 = Conv1D(filters, kernel_size=1, padding='same', activation='relu')(x)
+    branch5x5 = Conv1D(filters, kernel_size=5, padding='same', activation='relu')(branch5x5)
+
+    branch_pool = MaxPooling1D(pool_size=3, strides=1, padding='same')(x)
+    branch_pool = Conv1D(filters, kernel_size=1, padding='same', activation='relu')(branch_pool)
+
+    x = concatenate([branch1x1, branch3x3, branch5x5, branch_pool], axis=-1)
+    return x
+
+def build_advanced_cnn(input_shape=(98, 1)):  # 输入形状为98个特征
+    inputs = Input(shape=input_shape)
+
+    # 初始卷积层
+    x = Conv1D(64, kernel_size=7, strides=2, padding='same', activation='relu')(inputs)
+    x = MaxPooling1D(pool_size=3, strides=2, padding='same')(x)
+
+    # Inception模块
+    x = inception_module(x, filters=64)
+    x = inception_module(x, filters=128)
+
+    # 残差块
+    x = residual_block(x, filters=256, kernel_size=3, strides=2)
+    x = residual_block(x, filters=512, kernel_size=3, strides=2)
+
+    # 全局平均池化层
+    x = GlobalAveragePooling1D()(x)
+
+    # 全连接层
+    x = Dense(256, activation='relu')(x)
+    x = BatchNormalization()(x)
+
+    # 输出层，使用单个节点和'sigmoid'激活函数
+    outputs = Dense(1, activation='sigmoid')(x)
+
+    model = Model(inputs, outputs)
+    return model
+
+# 定义代价敏感损失函数
+def cost_sensitive_loss_positive(gamma_10, gamma_01):
+    def loss(y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
+        loss = - y_true * tf.math.log(y_pred + tf.keras.backend.epsilon()) * gamma_10 - \
+               (1 - y_true) * tf.math.log(1 - y_pred + tf.keras.backend.epsilon()) * gamma_01
+        return tf.reduce_mean(loss)
+    return loss
+
+def cost_sensitive_loss_negative(gamma_10, gamma_01, beta):
+    def loss(y_true, y_pred):
+        y_true = tf.cast(y_true, tf.float32)
+        loss = - y_true * tf.math.log(y_pred + tf.keras.backend.epsilon()) * gamma_10 - \
+               beta * (1 - y_true) * tf.math.log(1 - y_pred + tf.keras.backend.epsilon()) * gamma_01
+        return tf.reduce_mean(loss)
+    return loss
+
+# 计算修正系数
+Ns = np.sum(y_train == 0)  # 稳定样本数量
+Nuns = np.sum(y_train == 1)  # 不稳定样本数量
+gamma_10_pos = Ns / Nuns           # 正模型的gamma(1,0)
+gamma_01_pos = 1  # 正模型的gamma(0,1)
+gamma_10_neg = 1  # 反模型的gamma(1,0)
+gamma_01_neg = Ns / Nuns          # 反模型的gamma(0,1)
+beta = 1.6  # 反模型的调整系数
+
+print("Ns / Nuns:", Ns / Nuns)
+
+# 正分类器：倾向于将样本分类为稳定
+positive_cnn = build_advanced_cnn()
+positive_cnn.compile(optimizer=Adam(learning_rate=0.0001),
+                     loss=cost_sensitive_loss_positive(gamma_10_pos, gamma_01_pos),
+                     metrics=['accuracy'])
+positive_cnn.fit(X_train_reshaped, y_train, epochs=50, batch_size=32, verbose=1,
+                 validation_data=(X_val_reshaped, y_val))
+
+# 在测试集上评估正分类器的性能
+positive_test_probs = positive_cnn.predict(X_test_reshaped)
+positive_test_preds = (positive_test_probs >= 0.5).astype(int).flatten()
+accuracy_pos = accuracy_score(y_test, positive_test_preds)
+precision_pos = precision_score(y_test, positive_test_preds)
+recall_pos = recall_score(y_test, positive_test_preds)
+f1_pos = f1_score(y_test, positive_test_preds)
+conf_matrix_pos = confusion_matrix(y_test, positive_test_preds)
+print("Positive Classifier Performance on Test Set")
+print(f'Accuracy: {accuracy_pos:.4f}')
+print(f'Precision: {precision_pos:.4f}')
+print(f'Recall: {recall_pos:.4f}')
+print(f'F1 Score: {f1_pos:.4f}\n')
+print("Confusion Matrix:")
+print(conf_matrix_pos)
+
+# 反分类器：倾向于将样本分类为不稳定
+negative_cnn = build_advanced_cnn()
+negative_cnn.compile(optimizer=Adam(learning_rate=0.0001),
+                     loss=cost_sensitive_loss_negative(gamma_10_neg, gamma_01_neg, beta),
+                     metrics=['accuracy'])
+negative_cnn.fit(X_train_reshaped, y_train, epochs=50, batch_size=32, verbose=1,
+                 validation_data=(X_val_reshaped, y_val))
+
+# 在测试集上评估反分类器的性能
+negative_test_probs = negative_cnn.predict(X_test_reshaped)
+negative_test_preds = (negative_test_probs >= 0.5).astype(int).flatten()
+accuracy_neg = accuracy_score(y_test, negative_test_preds)
+precision_neg = precision_score(y_test, negative_test_preds)
+recall_neg = recall_score(y_test, negative_test_preds)
+f1_neg = f1_score(y_test, negative_test_preds)
+conf_matrix_neg = confusion_matrix(y_test, negative_test_preds)
+print("Negative Classifier Performance on Test Set")
+print(f'Accuracy: {accuracy_neg:.4f}')
+print(f'Precision: {precision_neg:.4f}')
+print(f'Recall: {recall_neg:.4f}')
+print(f'F1 Score: {f1_neg:.4f}\n')
+print("Confusion Matrix:")
+print(conf_matrix_neg)
+
+# 使用正分类器和反分类器的预测结果（在训练集上）
+# 正分类器预测
+positive_train_probs = positive_cnn.predict(X_train_reshaped)
+positive_train_preds = (positive_train_probs >= 0.5).astype(int).flatten()
+
+# 反分类器预测
+negative_train_probs = negative_cnn.predict(X_train_reshaped)
+negative_train_preds = (negative_train_probs >= 0.5).astype(int).flatten()
+
+# 获取临界样本，即正负分类器预测结果不一致的样本
+critical_samples = (positive_train_preds != negative_train_preds)
+
+# 使用布尔索引从原始数据中获取临界样本（未标准化的数据）
+X_critical = X_train_original[critical_samples]
+y_critical = y_train[critical_samples]
+
+# 检查临界样本的形状
+print(f"Shape of X_critical (original): {X_critical.shape}")
+print(f"Shape of y_critical: {y_critical.shape}")
+
+# 检查临界样本的数值范围，确保数据合理
+print(f"Critical sample features range (original): min = {X_critical.min()}, max = {X_critical.max()}")
+
+# 输出临界样本到Excel文件
+critical_df = pd.DataFrame(X_critical, columns=[f'feature_{i}' for i in range(X_critical.shape[1])])
+critical_df['label'] = y_critical
+output_critical_path = 'C:\\Users\\camby\\Desktop\\linjie8_original.xlsx'
+critical_df.to_excel(output_critical_path, index=False)
+print(f"Critical samples saved to {output_critical_path}")
